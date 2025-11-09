@@ -20,7 +20,7 @@ class TestMultiCamPackKernel:
     """Tests for multi-camera packing kernel."""
     
     def test_forward(self):
-        ""Test forward pass of multi-camera packing."""
+        """Test forward pass of multi-camera packing."""
         # Create test input
         x = torch.randn(BATCH_SIZE, NUM_CAMS, C, H, W, device='cuda')
         
@@ -43,7 +43,7 @@ class TestVisionLanguageFusionKernel:
     """Tests for vision-language fusion kernel."""
     
     def test_forward(self):
-        ""Test forward pass of vision-language fusion."""
+        """Test forward pass of vision-language fusion."""
         # Create test inputs
         visual = torch.randn(BATCH_SIZE, SEQ_LENGTH, HIDDEN_DIM, device='cuda')
         text = torch.randn(BATCH_SIZE, SEQ_LENGTH, HIDDEN_DIM, device='cuda')
@@ -61,7 +61,7 @@ class TestActionDecodeKernel:
     """Tests for action decoding kernel."""
     
     def test_forward(self):
-        ""Test forward pass of action decoding."""
+        """Test forward pass of action decoding."""
         # Create test inputs
         hidden = torch.randn(BATCH_SIZE, HIDDEN_DIM, device='cuda')
         weight1 = torch.randn(HIDDEN_DIM, 2*HIDDEN_DIM, device='cuda')

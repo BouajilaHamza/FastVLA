@@ -7,7 +7,7 @@ class TestFastVLAModel:
     """Tests for the FastVLA model."""
     
     def test_forward_pass(self, test_config, test_batch):
-        ""Test forward pass through the model."""
+        """Test forward pass through the model."""
         # Move batch to GPU if available
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         test_batch = {k: v.to(device) for k, v in test_batch.items()}
@@ -30,7 +30,7 @@ class TestFastVLAModel:
         assert not torch.isnan(loss)
     
     def test_training_step(self, test_config, test_batch):
-        ""Test a single training step."""
+        """Test a single training step."""
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         test_batch = {k: v.to(device) for k, v in test_batch.items()}
         

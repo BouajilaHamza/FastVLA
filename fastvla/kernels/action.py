@@ -95,6 +95,42 @@ def action_decode_forward(
     )
     return output
 
+@triton.jit
+def _action_decode_backward_kernel(
+    grad_output_ptr, hidden_ptr, weight1_ptr, weight2_ptr,
+    grad_hidden_ptr, grad_w1_ptr, grad_b1_ptr, grad_w2_ptr, grad_b2_ptr,
+    B, D, H, A,
+    stride_go_b, stride_go_a,
+    stride_h_b, stride_h_d,
+    stride_w1_i, stride_w1_o,
+    stride_w2_i, stride_w2_o,
+    stride_gh_b, stride_gh_d,
+    stride_gw1_i, stride_gw1_o,
+    stride_gw2_i, stride_gw2_o,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """Backward pass for action decoding."""
+    pid_b = tl.program_id(0)
+    pid_h = tl.program_id(1)
+    
+    # Compute gradients for second layer (W2, b2)
+    if pid_h < A:  # Action dimension
+        grad_out = tl.load(grad_output_ptr + pid_b * stride_go_b + pid_h * stride_go_a)
+        
+        # Gradient for bias2: sum over batch
+        if pid_b == 0:
+            grad_b2 = grad_out
+            tl.store(grad_b2_ptr + pid_h, grad_b2)
+        
+        # Gradient for weight2: grad_out @ h (hidden state after first layer)
+        # This requires the forward pass intermediate, which we'll compute
+        # For now, use PyTorch autograd fallback for complex backward passes
+    
+    # Compute gradients for first layer
+    # This is complex and requires intermediate activations
+    # For production, use PyTorch autograd with custom Function
+    pass
+
 def action_decode_backward(
     grad_output: torch.Tensor,
     hidden: torch.Tensor,
@@ -103,6 +139,26 @@ def action_decode_backward(
     weight2: torch.Tensor,
     bias2: torch.Tensor,
 ):
-    """Backward pass for action decoding."""
-    # Implementation depends on the forward pass
-    raise NotImplementedError("Backward pass not implemented")
+    """Backward pass for action decoding using PyTorch autograd."""
+    # Use PyTorch's autograd for the backward pass
+    # This is more reliable for complex MLP gradients
+    hidden.requires_grad_(True)
+    weight1.requires_grad_(True)
+    bias1.requires_grad_(True)
+    weight2.requires_grad_(True)
+    bias2.requires_grad_(True)
+    
+    # Forward pass
+    h1 = torch.nn.functional.relu(hidden @ weight1 + bias1)
+    output = torch.tanh(h1 @ weight2 + bias2)
+    
+    # Backward pass
+    output.backward(grad_output, retain_graph=True)
+    
+    return (
+        hidden.grad,
+        weight1.grad,
+        bias1.grad,
+        weight2.grad,
+        bias2.grad,
+    )

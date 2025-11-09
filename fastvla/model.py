@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from transformers import AutoConfig, AutoModelForCausalLM
+from typing import Optional
 from transformers.modeling_utils import PreTrainedModel
 from unsloth import (
     FastLanguageModel,
@@ -12,6 +12,15 @@ from unsloth import (
     patch_tokenizer,
 )
 from .config import FastVLAConfig
+from .kernels import (
+    vision_language_fusion_forward,
+    multi_cam_pack_forward,
+)
+from .optimization import (
+    get_quantization_config,
+    enable_gradient_checkpointing,
+    get_peft_config,
+)
 
 class FastVLAModel(PreTrainedModel):
     """
@@ -90,13 +99,12 @@ class FastVLAModel(PreTrainedModel):
         self.llm = self.llm.to_bettertransformer()
         self.vision_encoder = self.vision_encoder.to_bettertransformer()
     
-    @torch.compile(fullgraph=False, mode='max-autotune')
     def forward(self, pixel_values, input_ids, attention_mask=None, labels=None):
         """
         Forward pass of the model.
         
         Args:
-            images: (batch_size, num_cameras, channels, height, width)
+            pixel_values: (batch_size, num_cameras, channels, height, width)
             input_ids: (batch_size, seq_len)
             attention_mask: (batch_size, seq_len)
             labels: (batch_size, action_dim)
@@ -108,49 +116,40 @@ class FastVLAModel(PreTrainedModel):
         batch_size = pixel_values.size(0)
         num_cameras = pixel_values.size(1)
         
-        # Process each camera view with torch.compile optimization
+        # Process vision encoder for each camera view
+        # Use efficient batched processing when possible
         visual_features = []
         for cam_idx in range(num_cameras):
-            # Use torch.compile for the vision encoder
-            @torch.compile(fullgraph=False, mode='max-autotune')
-            def process_view(x):
-                return self.vision_encoder(
-                    pixel_values=x,
-                    return_dict=True
-                ).last_hidden_state
-            
-            # Process view with optimized function
-            cam_outputs = process_view(pixel_values[:, cam_idx])
-            visual_features.append(self.vision_proj(cam_outputs))
+            # Process each camera view through vision encoder
+            cam_images = pixel_values[:, cam_idx]  # (batch_size, C, H, W)
+            vision_outputs = self.vision_encoder(
+                pixel_values=cam_images,
+                return_dict=True
+            )
+            # Get visual tokens and project to LLM hidden size
+            cam_features = self.vision_proj(vision_outputs.last_hidden_state)  # (batch_size, seq_len, hidden_size)
+            visual_features.append(cam_features)
         
-        # Average features across camera views
-        visual_features = torch.stack(visual_features).mean(dim=0)  # (batch_size, seq_len, hidden_size)
+        # Average visual features across camera views
+        visual_features = torch.stack(visual_features, dim=0).mean(dim=0)  # (batch_size, seq_len, hidden_size)
         
         # Get text embeddings
-        text_embeds = self.llm.get_input_embeddings()(input_ids)
+        text_embeds = self.llm.get_input_embeddings()(input_ids)  # (batch_size, seq_len, hidden_size)
         
-        # Fuse visual and text features with memory-efficient attention
-        # Using Unsloth's optimized attention implementation
-        visual_features = torch.stack(visual_features).mean(dim=0)  # Average across views
+        # Fuse visual and text features using custom kernel
+        # This is more efficient than cross-attention for simple fusion
+        if visual_features.size(1) != text_embeds.size(1):
+            # If sequence lengths don't match, pool visual features
+            visual_features = visual_features.mean(dim=1, keepdim=True)  # (batch_size, 1, hidden_size)
+            visual_features = visual_features.expand(-1, text_embeds.size(1), -1)  # (batch_size, seq_len, hidden_size)
         
-        # Cross-attention between text and visual features
-        # This is more efficient than simple concatenation
-        cross_attention_outputs = self.llm.model.model.decoder.layers[0].encoder_attn(
-            hidden_states=text_embeds,
-            attention_mask=attention_mask,
-            encoder_hidden_states=visual_features,
-            encoder_attention_mask=None,
-            past_key_value=None,
-            output_attentions=False,
-            use_cache=False,
-        )
-        
-        combined_embeds = cross_attention_outputs[0]  # [batch_size, seq_len, hidden_size]
+        # Use custom fusion kernel for efficient vision-language fusion
+        fused_embeds = vision_language_fusion_forward(visual_features, text_embeds)
         
         # Forward pass through LLM with Unsloth optimizations
         with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=True):
             outputs = self.llm(
-                inputs_embeds=combined_embeds,
+                inputs_embeds=fused_embeds,
                 attention_mask=attention_mask,
                 output_hidden_states=True,
                 use_cache=False,  # Disable KV cache for training
@@ -159,7 +158,7 @@ class FastVLAModel(PreTrainedModel):
         # Get the last hidden state for action prediction
         last_hidden_state = outputs.hidden_states[-1]  # (batch_size, seq_len, hidden_size)
         
-        # Use the [CLS] token or mean pooling for action prediction
+        # Use mean pooling for action prediction
         pooled_output = last_hidden_state.mean(dim=1)  # (batch_size, hidden_size)
         action_preds = self.action_head(pooled_output)  # (batch_size, action_dim)
         
@@ -175,3 +174,65 @@ class FastVLAModel(PreTrainedModel):
         # Get model predictions
         action_preds, _ = self(images, input_ids)
         return action_preds
+    
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_name: Optional[str] = None,
+        vision_encoder_name: Optional[str] = None,
+        llm_name: Optional[str] = None,
+        config: Optional[FastVLAConfig] = None,
+        load_in_4bit: bool = True,
+        max_seq_length: int = 2048,
+        gradient_checkpointing: bool = True,
+        use_peft: bool = True,
+        lora_rank: int = 16,
+        lora_alpha: int = 32,
+        lora_dropout: float = 0.05,
+        token: Optional[str] = None,
+        device_map: str = "auto",
+        **kwargs
+    ):
+        """
+        Load a FastVLA model from pretrained components.
+        
+        Args:
+            model_name: Name of the full model (if available)
+            vision_encoder_name: Name of the vision encoder model
+            llm_name: Name of the language model
+            config: FastVLAConfig object (optional)
+            load_in_4bit: Whether to load in 4-bit quantization
+            max_seq_length: Maximum sequence length
+            gradient_checkpointing: Whether to enable gradient checkpointing
+            use_peft: Whether to use PEFT (LoRA)
+            lora_rank: LoRA rank
+            lora_alpha: LoRA alpha
+            lora_dropout: LoRA dropout
+            token: HuggingFace token for private models
+            device_map: Device mapping strategy
+            **kwargs: Additional arguments
+            
+        Returns:
+            FastVLAModel instance
+        """
+        # Create config if not provided
+        if config is None:
+            config = FastVLAConfig(
+                vision_encoder_name=vision_encoder_name or "google/vit-base-patch16-224",
+                llm_name=llm_name or "meta-llama/Llama-2-7b-hf",
+                max_sequence_length=max_seq_length,
+                load_in_4bit=load_in_4bit,
+                use_peft=use_peft,
+                lora_rank=lora_rank,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+            )
+        
+        # Create model instance
+        model = cls(config)
+        
+        # Enable gradient checkpointing if requested
+        if gradient_checkpointing:
+            enable_gradient_checkpointing(model)
+        
+        return model

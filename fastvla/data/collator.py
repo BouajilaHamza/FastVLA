@@ -27,7 +27,7 @@ class UnslothVLACollator:
             
         Returns:
             Batch dictionary with padded/stacked tensors
-        ""
+        """
         batch = {}
         
         # Handle images (multiple camera views)

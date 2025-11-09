@@ -19,7 +19,7 @@ TEST_ACTION_DIM = 7
 @pytest.fixture
 def test_config():
     """Create a test configuration."""
-    return FastVLAConfig(
+    config = FastVLAConfig(
         vision_encoder_name="google/vit-base-patch16-224",
         llm_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         image_size=TEST_IMAGE_SIZE,
@@ -29,6 +29,9 @@ def test_config():
         load_in_4bit=False,  # Disable for testing
         use_peft=False,      # Disable for testing
     )
+    # Add batch_size attribute for compatibility
+    config.batch_size = TEST_BATCH_SIZE
+    return config
 
 @pytest.fixture
 def test_batch():
