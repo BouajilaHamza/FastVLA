@@ -1,0 +1,38 @@
+[project]
+name = "fastvla"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate>=0.20.0",
+    "bitsandbytes>=0.41.0",
+    "black>=23.3.0",
+    "gym>=0.26.0",
+    "h5py>=3.8.0",
+    "isort>=5.12.0",
+    "numpy>=1.24.0",
+    "opencv-python>=4.7.0",
+    "pillow>=9.0.0",
+    "pytest>=7.3.1",
+    "pytest-benchmark>=4.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.10.0",
+    "pytest-xdist>=3.3.1",
+    "rospkg>=1.5.0",
+    "sphinx>=6.0.0",
+    "sphinx-rtd-theme>=1.2.0",
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "triton>=2.0.0",
+    "unsloth[colab]",
+    "xformers>=0.0.20",
+]
+
+
+
+[tool.uv.extra-build-dependencies]
+    flash-attn = ["torch"]
+
+[tool.uv.sources]
+unsloth = { git = "https://github.com/unslothai/unsloth.git" }
